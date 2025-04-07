@@ -1,4 +1,4 @@
-import numpy as np
+import torch
 import scipy.signal as signal
 
 def DFTAnaRealEntireSignal(x_in, K, N, p):
@@ -8,27 +8,28 @@ def DFTAnaRealEntireSignal(x_in, K, N, p):
     Lp = len(p)  # 필터 길이
     Lx = x_in.shape[1]  # 입력 신호 길이
     n_ch = x_in.shape[0] if x_in.ndim > 1 else 1  # 채널 수
-    n_blocks = int(np.floor(Lx / N))  # 블록 개수
-    X_out = np.zeros((n_ch, n_blocks, K//2 + 1), dtype=np.complex64)  # 복소수형 FFT 결과 저장
+    n_blocks = Lx//N
+    device = x_in.device
+    X_out = torch.zeros((n_ch, n_blocks, K//2 + 1), dtype=torch.cfloat, device = device)  # 복소수형 FFT 결과 저장
 
     for ch_ix in range(n_ch):
         x_tmp = x_in[ch_ix,:] if n_ch > 1 else x_in
         x_tmp = x_tmp.flatten()
-        # ✅ 패딩 추가 (MATLAB의 `buffer([zeros(1,N-1) x_tmp], Lp, Lp-N);`과 동일)
-        x_padded = np.concatenate((np.zeros(Lp - N), x_tmp))  # 앞쪽에 Lp-N 개의 0 추가
+        # 패딩 추가 (MATLAB의 `buffer([zeros(1,N-1) x_tmp], Lp, Lp-N);`과 동일)
+        x_padded = torch.cat((torch.zeros(Lp - N,device = device), x_tmp))  # 앞쪽에 Lp-N 개의 0 추가
 
-        # ✅ 슬라이딩 윈도우 적용 (MATLAB의 buffer() 대체)
-        x_buffer = np.lib.stride_tricks.sliding_window_view(x_padded, window_shape=(Lp,))[::N]
- 
-        # ✅ 프레임을 역순으로 정렬 (MATLAB `Lp:-1:1`과 동일)
-        x_buffer = np.flip(x_buffer, axis=1)  # 열 방향으로만 뒤집음
+        # 슬라이딩 윈도우 적용 (MATLAB의 buffer() 대체)
+        x_buffer = x_padded.unfold(0,Lp,N) #shape = (n_blocks, Lp)
 
-        # ✅ 필터 적용 (브로드캐스팅을 위해 p를 (1, Lp)로 변환)
+        # 프레임을 역순으로 정렬 (MATLAB `Lp:-1:1`과 동일)
+        x_buffer = torch.flip(x_buffer, dims=[1])  # 열 방향으로만 뒤집음 shape = (n_blocks, Lp)
+
+        # 필터 적용 (브로드캐스팅을 위해 p를 (1, Lp)로 변환)
+        p = p.to(device)
         p = p.reshape(1, -1)
         U = (x_buffer * p).reshape(n_blocks, Lp // K, K)  # 크기 변환
 
-        # ✅ FFT 수행
-        V = np.fft.fft(U.sum(axis=1), axis=1)
+        V = torch.fft.fft(U.sum(dim=1), dim=1)
 
         X_out[ch_ix, :, :] = V[:, :K//2+1]
 
@@ -36,31 +37,37 @@ def DFTAnaRealEntireSignal(x_in, K, N, p):
 
 
 #inverse stft
-import numpy as np
 
 def DFTSynRealEntireSignal(X_in, K, N, p):
-    Lp = len(p)  # 필터 길이
-    x = np.zeros(N * X_in.shape[0], dtype=X_in.dtype)  # 출력 신호 초기화
+    """
+    Real-valued STFT Synthesis (GPU-compatible)
+    X_in: [n_frames, K//2 + 1]
+    K: FFT size
+    N: hop size
+    p: filter (1D tensor of length Lp)
+    """
+    device = X_in.device
+    Lp = len(p)
+    n_frames = X_in.shape[0]
+    x = torch.zeros(N * n_frames, dtype=torch.float32, device=device)
 
-    if np.all(X_in == 0):
+    if torch.allclose(X_in, torch.zeros_like(X_in)):
         return x
 
-    tdl = np.zeros(Lp, dtype=X_in.dtype)  # 지연선 필터 초기화
+    # Hermitian symmetry to get full FFT spectrum
+    X_sym = torch.cat([X_in, torch.conj(X_in[:, 1:-1].flip(dims=[1]))], dim=1)
 
-    # 역 FFT 수행
-    X_sym = np.hstack([X_in, np.conj(X_in[:,-2:0:-1])])  # 대칭 복원
-    Y = np.real(np.fft.ifft(X_sym, axis=1))  # 시간 도메인 변환
+    Y = torch.fft.ifft(X_sym, dim=1).real  # IFFT to time domain
 
-    # 윈도우 적용
-    tmp = np.tile(Y.T, (Lp // K, 1)).T * p
-    tdl = np.zeros(Lp, dtype = X_in.dtype)
-    # 프레임별 합성
-    Nzeros = np.zeros(N, dtype=X_in.dtype)
+    # Repeat & apply filter
+    tmp = torch.tile(Y, (Lp // K, 1)) * p.to(device).unsqueeze(0)  # shape: (n_frames, Lp)
 
-    for i in range(X_in.shape[0]):
-        k = N * i  # MATLAB (i-1) 보정 불필요
+    tdl = torch.zeros(Lp, dtype=torch.float32, device=device)
+    Nzeros = torch.zeros(N, dtype=torch.float32, device=device)
 
-        tdl = np.concatenate((Nzeros, tdl[:Lp-N])) + tmp[i,:]
-        x[k:k+N] = (K * N) * tdl[-N:][::-1]  # 마지막 N개를 뒤집어 저장
+    for i in range(n_frames):
+        k = N * i
+        tdl = torch.cat((Nzeros, tdl[:Lp - N])) + tmp[i]
+        x[k:k+N] = (K * N) * tdl[-N:].flip(0)  # overlap-add
 
     return x
