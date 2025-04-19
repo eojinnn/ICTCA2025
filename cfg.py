@@ -51,7 +51,7 @@ no_sinc = False
 snr = [0, 30]  # during training, snr will be drawn uniformly from this interval
 t60 = [0.2, 1.0]  # during training, t60 will be drawn uniformly from this interval
 fs = 16000  # sampling rate
-sig_len = 2048  # length of snippet used for tdoa estimation
+sig_len = 8000  # length of snippet used for tdoa estimation
 anechoic = False  # set to True to use anechoic environment without reverberation
 
 # threshold in samples

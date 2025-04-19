@@ -11,7 +11,7 @@ import argparse
 import os
 import cfg
 
-from model import PGCCPHAT, GCC
+from model import PGCCPHAT, GCC_freq, GCC_time
 from data import LibriSpeechLocations, DelaySimulator, one_random_delay
 from cdr_dereverb import cdr_robust
 
@@ -19,7 +19,7 @@ from cdr_dereverb import cdr_robust
 DATA_LEN = 2620
 VAL_IDS = [260, 672, 908]  # use these speaker ids for validation
 TEST_IDS = [61, 121, 237]  # use these speaker ids for testing
-NUM_TEST_WINS = 15
+NUM_TEST_WINS = 1
 MIN_SIG_LEN = 2  # only use snippets longer than 2 seconds
 
 parser = argparse.ArgumentParser()
@@ -28,6 +28,7 @@ parser.add_argument('--exp_name', type=str,
 parser.add_argument('--evaluate', action='store_true',
                     help='Set to true in order to evaluate the model across a range of SNRs and T60s')
 parser.add_argument('--data_loc', default = 'D:/datas/librispeech/LibriSpeech/', help = 'librispeech location')
+parser.add_argument('--input', type=str, default='freq', help='use stft or not')
 args = parser.parse_args()
 
 if not os.path.exists('experiments'):
@@ -79,7 +80,7 @@ source_locs_test = np.random.uniform(
 lower_bound = 0
 upper_bound = fs * MIN_SIG_LEN
 
-# create datasets
+# create datasets   
 train_set = LibriSpeechLocations(source_locs_train, data_root = args.data_loc, split="test-clean")
 print('Total data set size: ' + str(len(train_set)))
 
@@ -135,7 +136,7 @@ else:
 
 # load model
 if cfg.model == 'PGCCPHAT':
-    model = PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head)
+    model = PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head, input_shape=args.input)
 else:
     raise Exception("Please specify a valid model")
 
@@ -143,7 +144,8 @@ model = model.to(device)
 model.eval()
 # summary(model, [(1, 1, sig_len), (1, 1, sig_len)])
 
-gcc = GCC(max_tau=max_tau_gcc)
+fgcc = GCC_freq(max_tau=max_tau_gcc)
+tgcc = GCC_time(max_tau=max_tau_gcc)
 
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
@@ -208,23 +210,22 @@ for e in range(epochs):
 
             x1 = x1.to(device) #([32,1,2048])
             x2 = x2.to(device)
-           
-            delays = delays.to(device)
-            X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
-            y_hat = model(X1, X2)
-
-            cc = gcc(X1, X2)
+            cc = tgcc(x1, x2)
             shift_gcc = torch.argmax(cc, dim=-1) - max_tau_gcc
+            
+            delays = delays.to(device)
+            if args.input == 'freq':
+                X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
+                y_hat = model(X1, X2)
+                x1 = X1
+                x2 = X2
+            else:
+                y_hat = model(x1, x2)
 
-            # if cfg.loss == 'ce':
-            #     delays_loss = torch.round(delays).type(torch.LongTensor)
-            #     shift = torch.argmax(y_hat, dim=-1) - max_tau
-            # else:
             delays_loss = (delays - delay_mu) / delay_sigma
             shift = y_hat * delay_sigma + delay_mu - max_tau
 
             gt = delays - max_tau
-            gt = gt.unsqueeze(1)
             mae += torch.sum(torch.abs(shift-gt))
             gcc_mae += torch.sum(torch.abs(shift_gcc-gt))
 
@@ -232,9 +233,19 @@ for e in range(epochs):
             gcc_acc += torch.sum(torch.abs(shift_gcc-gt) < cfg.t)
 
             loss = loss_fn(y_hat, delays_loss.to(device))
+
+            if torch.isnan(y_hat).any():
+                print(" NaN detected in y_hat")
+            if torch.isnan(loss):
+                print(" NaN detected in loss!")
+                print("delays_loss:", delays_loss)
+                print("y_hat:", y_hat)
+                break
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
 
             train_loss += loss.detach().item() * bs
 
@@ -272,13 +283,18 @@ for e in range(epochs):
                 bs = x1.shape[0]
                 x1 = x1.to(device)
                 x2 = x2.to(device)
+
+                cc = tgcc(x1, x2)
+                shift_gcc = torch.argmax(cc, dim=-1) - max_tau_gcc
                 delays = delays.to(device)
 
-                X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
-                y_hat = model(X1, X2)
-
-                cc = gcc(X1, X2)
-                shift_gcc = torch.argmax(cc, dim=-1) - max_tau_gcc
+                if args.input == 'freq':
+                    X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
+                    y_hat = model(X1, X2)
+                    x1 = X1
+                    x2 = X2
+                else:
+                    y_hat = model(x1, x2)
 
                 if cfg.loss == 'ce':
                     delays_loss = torch.round(delays).type(torch.LongTensor)
@@ -288,7 +304,6 @@ for e in range(epochs):
                     shift = y_hat * delay_sigma + delay_mu - max_tau
 
                 gt = delays - max_tau
-                gt = gt.unsqueeze(1)
                 mae += torch.sum(torch.abs(shift-gt))
                 gcc_mae += torch.sum(torch.abs(shift_gcc-gt))
 
@@ -297,6 +312,9 @@ for e in range(epochs):
 
                 loss = loss_fn(y_hat, delays_loss.to(device))
                 val_loss += loss.detach().item() * bs
+
+                torch.save(model.state_dict(), 'experiments/'
+                        + args.exp_name+'/'+'model.pth')
 
                 pbar.update(pbar_update)
 
@@ -390,15 +408,19 @@ if args.evaluate:
                             bs = x1.shape[0]
                             x1 = x1.to(device)
                             x2 = x2.to(device)
-                            
-                            delays = delays.to(device)
 
-                            X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
-                            y_hat = model(X1, X2)
-
-                            cc = gcc(X1, X2)
+                            cc = tgcc(x1, x2)
                             shift_gcc = torch.argmax(cc, dim=-1) - max_tau_gcc
 
+                            delays = delays.to(device)
+                            if args.input == 'freq':
+                                X1, X2 = cdr_robust(x1.squeeze(1), x2.squeeze(1))
+                                y_hat = model(X1, X2)
+                                x1 = X1
+                                x2 = X2
+                            else:
+                                y_hat = model(x1, x2)
+                            
                             if cfg.loss == 'ce':
                                 delays_loss = torch.round(
                                     delays).type(torch.LongTensor)
@@ -422,7 +444,7 @@ if args.evaluate:
                             preds[start_index:end_index, snr_index,
                                   t60_index] = shift.cpu().numpy()
                             preds_gcc[start_index:end_index, snr_index,
-                                      t60_index] = shift_gcc.cpu().numpy()
+                                      t60_index] = shift_gcc.view(-1).cpu().numpy()
                             start_index = start_index + bs
 
                             loss = loss_fn(y_hat, delays_loss.to(device))
