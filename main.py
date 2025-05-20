@@ -12,6 +12,7 @@ import os
 import cfg
 
 from model import PGCCPHAT, GCC_freq, GCC_time
+from iceic_model import mPGCCPHAT
 from data import LibriSpeechLocations, DelaySimulator, one_random_delay
 from cdr_dereverb import cdr_robust
 
@@ -137,6 +138,8 @@ else:
 # load model
 if cfg.model == 'PGCCPHAT':
     model = PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head, input_shape=args.input)
+elif cfg.model == 'mPGCCPHAT':
+    model = mPGCCPHAT(max_tau=max_tau_gcc, head=cfg.head)
 else:
     raise Exception("Please specify a valid model")
 

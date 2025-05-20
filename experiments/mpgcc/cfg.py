@@ -39,7 +39,7 @@ wd = 0.0  # weight decay
 ls = 0.0  # label smoothing
 
 # Model parameters
-model = 'PGCCPHAT'  # choices: mPGCCPHAT, PGCCPHAT
+model = 'mPGCCPHAT'  # choices: mPGCCPHAT, PGCCPHAT
 max_delay = 23
 num_channels = 128  # number of channels in final layer of NGCCPHAT backbone
 head = 'regression'  # final layer type. Choices: 'classifier', 'regression'
