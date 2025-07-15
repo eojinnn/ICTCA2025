@@ -11,7 +11,8 @@ import argparse
 import os
 import cfg
 
-from model import PGCCPHAT, GCC_freq, GCC_time
+from loss import LabelSmoothing
+from model import PGCCPHAT, GCC_freq, GCC_time, Probabilistic_PGCCPHAT, modified_PGCCPHAT
 from iceic_model import mPGCCPHAT
 from data import LibriSpeechLocations, DelaySimulator, one_random_delay
 from cdr_dereverb import cdr_robust
@@ -140,12 +141,17 @@ if cfg.model == 'PGCCPHAT':
     model = PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head, input_shape=args.input)
 elif cfg.model == 'mPGCCPHAT':
     model = mPGCCPHAT(max_tau=max_tau_gcc, head=cfg.head)
+elif cfg.model == 'Probabilistic_PGCCPHAT':
+    model = Probabilistic_PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head, input_shape=args.input)
+elif cfg.model == 'modified_PGCCPHAT':
+    model = modified_PGCCPHAT(max_tau=max_tau_gcc, head=cfg.head, input_shape=args.input)
 else:
     raise Exception("Please specify a valid model")
 
 model = model.to(device)
 model.eval()
-# summary(model, [(1, 1, sig_len), (1, 1, sig_len)])
+summary(model, args = [torch.randn(2, 1, 47), torch.randn(2, 1, 47)])
+
 
 fgcc = GCC_freq(max_tau=max_tau_gcc)
 tgcc = GCC_time(max_tau=max_tau_gcc)
@@ -213,6 +219,8 @@ for e in range(epochs):
 
             x1 = x1.to(device) #([32,1,2048])
             x2 = x2.to(device)
+            print('x1shape:',x1.shape)
+
             cc = tgcc(x1, x2)
             shift_gcc = torch.argmax(cc, dim=-1) - max_tau_gcc
             
@@ -224,10 +232,12 @@ for e in range(epochs):
                 x2 = X2
             else:
                 y_hat = model(x1, x2)
-
+            
             delays_loss = (delays - delay_mu) / delay_sigma
             shift = y_hat * delay_sigma + delay_mu - max_tau
-
+            print(delays.shape)
+            print(shift.shape)
+            print(max_tau)
             gt = delays - max_tau
             mae += torch.sum(torch.abs(shift-gt))
             gcc_mae += torch.sum(torch.abs(shift_gcc-gt))

@@ -216,3 +216,94 @@ class PGCCPHAT(nn.Module):
         x = self.mlp(x.reshape([batch_size, -1])).squeeze() # batch, 512x6x1014
 
         return x    
+    
+class Probabilistic_PGCCPHAT(nn.Module):
+    def __init__(self, beta=np.arange(0, 1.1, 0.1), max_tau=42, head='regression', input_shape = 'freq'):
+        super().__init__()
+
+        '''
+        Implementation of CNN-Based Parametrized GCC-PHAT by Salvati et al.
+        https://www.isca-speech.org/archive/pdfs/interspeech_2021/salvati21_interspeech.pdf
+        '''
+        self.mode = input_shape
+        self.beta = beta
+        if self.mode == 'freq':
+            self.gcc = GCC_freq(max_tau=max_tau, dim=3, filt='phat', beta=beta)
+            self.num_class = 11
+        else:
+            self.gcc = GCC_time(max_tau=max_tau, dim=3, filt='phat', beta=beta)
+            self.num_class = 1
+        self.head = head
+        self.max_tau = max_tau
+
+        if head == 'regression':
+            n_out = 1
+        else:
+            n_out = 2 * self.max_tau + 1
+
+        self.conv1 = nn.Conv2d(self.num_class, 32, kernel_size=(3, 3))
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=(3, 3))
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=(3, 3))
+        self.bn3 = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=(3, 3))
+        self.bn4 = nn.BatchNorm2d(256)
+        self.conv5 = nn.Conv2d(256, 11, kernel_size=(3, 3))
+        self.bn5 = nn.BatchNorm2d(11)
+
+        self.mlp = nn.Sequential(
+            nn.LazyLinear(512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(512, n_out)
+        )
+
+    def forward(self, X1, X2):
+        batch_size = X1.shape[0]
+
+        # Step 1: GCC
+        x = self.gcc(X1, X2)  # shape: (B, beta=11, T, D)
+        attention_weights = F.softmax(x, dim=-1)
+        
+        # Step 2: CNN branch
+        if self.mode != "freq":
+            x = x.unsqueeze(1)  # (B, 1, T, D)
+
+        x = self.conv1(x)
+        x = F.relu(self.bn1(x))  # → (B, 32, H1, W1)
+
+        x = self.conv2(x)
+        x = F.relu(self.bn2(x))  # → (B, 64, H2, W2)
+
+        x = self.conv3(x)
+        x = F.relu(self.bn3(x))  # → (B, 128, H3, W3)
+
+        x = self.conv4(x)
+        x = F.relu(self.bn4(x))  # → (B, 256, H4, W4)
+
+        x = self.conv5(x)
+        x = F.relu(self.bn5(x))  # → (B, 512, H5, W5)
+        
+        # Step 3: Align and multiply with attention weights
+        # Resize attention_weights to match CNN output shape
+        
+        attn_resized = F.interpolate(attention_weights, size=x.shape[-2:], mode='bilinear', align_corners=False)
+        # If attention is still (B, beta, H, W), convert to (B, 512, H, W)
+        if attn_resized.shape[1] != x.shape[1]:
+            attn_resized = attn_resized.expand(-1, x.shape[1], -1, -1)
+
+        # Step 4: Elementwise multiply
+        x = x * attn_resized  # attention-weighted CNN features
+
+        # Step 5: MLP head
+        x = x.view(batch_size, -1)
+        x = self.mlp(x).squeeze()
+
+        return x
+    

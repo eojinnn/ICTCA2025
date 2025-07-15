@@ -1,0 +1,9 @@
+# Ignore Python cache files and folders
+__pycache__/
+*.pyc
+
+# Ignore .pth files
+*.pth
+
+# Ignore .npz files
+*.npz
