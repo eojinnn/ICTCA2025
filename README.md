@@ -50,19 +50,19 @@ Evaluated using simulated acoustic scenes generated with **Pyroomacoustics** and
 
 The scripts depend on a local **LibriSpeech** dataset and a Python/PyTorch environment with **torchaudio, pyroomacoustics, NumPy, scipy, librosa**, and other imports used by the scripts.
 
-The default configuration in [cfg.py](cfg.py) selects \`Probabilistic_PGCCPHAT\` and a regression head. An example invocation from the repository root is:
+The default configuration in [cfg.py](cfg.py) selects `Probabilistic_PGCCPHAT` and a regression head. An example invocation from the repository root is:
 
-\`\`\`bash
+```bash
 python main.py --exp_name proposed --data_loc /path/to/LibriSpeech
-\`\`\`
+```
 
 To evaluate a **previously trained** checkpoint:
 
-\`\`\`bash
+```bash
 python main.py --exp_name proposed --data_loc /path/to/LibriSpeech --evaluate
-\`\`\`
+```
 
-**Important limitations:** The code has not been freshly executed or environment-pinned for this README. It contains original local Windows paths in some utilities, and evaluation depends on a matching checkpoint. Check \`main.py\`, \`cfg.py\`, and the dataset configuration before running. Archived log files are not a substitute for a verified reproduction.
+**Important limitations:** The code has not been freshly executed or environment-pinned for this README. It contains original local Windows paths in some utilities, and evaluation depends on a matching checkpoint. Check `main.py`, `cfg.py`, and the dataset configuration before running. Archived log files are not a substitute for a verified reproduction.
 
 ## Publication
 
